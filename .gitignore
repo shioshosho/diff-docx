@@ -34,3 +34,5 @@ Thumbs.db
 # Temp files
 *.tmp
 *.temp
+!/cmd/
+!/cmd/**
