@@ -74,9 +74,11 @@ magick --version
 
 ### 任意ツール
 
-#### LibreOffice（ベクター画像比較用）
+#### LibreOffice（ベクター画像比較用、`--convert-png=false` 時のみ必要）
 
-docx内のベクター画像（`.wmf`, `.emf`, `.svg`）を比較するには LibreOffice が必要です。LibreOfficeがインストールされていない場合、ベクター画像の比較はスキップされ、ラスター画像（`.png`, `.jpg` 等）のみが比較対象になります。
+デフォルトではベクター画像（`.wmf`, `.emf`, `.svg`）はImageMagickでPNGに変換してから比較するため、LibreOfficeは不要です。
+
+`--convert-png=false` を指定した場合のみ、ベクター画像の比較にLibreOfficeが必要になります。LibreOfficeがインストールされていない場合、ベクター画像の比較はスキップされます。
 
 | OS | コマンド |
 | - | - |
@@ -138,6 +140,7 @@ diff-docx <older.docx> <newer.docx>
 | `-h`, `--help` | ヘルプを表示 |
 | `-v`, `--version` | バージョンを表示 |
 | `--verbose` | 詳細出力（一致画像、スキップ画像、差分画像パスを表示） |
+| `--convert-png` | ベクター画像（wmf/emf/svg）をImageMagickでPNGに変換してから比較（デフォルト: true）。`--convert-png=false` で無効化 |
 
 ### 実行例
 
@@ -250,7 +253,7 @@ PSNR < 1.0 のチャンネルがひとつでもあれば「差異あり」と判
 | 種別 | 拡張子 | 条件 |
 |---|---|---|
 | ラスター | `.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tiff`, `.tif`, `.webp` | 常に比較可能 |
-| ベクター | `.wmf`, `.emf`, `.svg` | LibreOffice が必要 |
+| ベクター | `.wmf`, `.emf`, `.svg` | デフォルト: ImageMagickでPNG変換して比較。`--convert-png=false` 時は LibreOffice が必要 |
 
 ## 一時ファイル
 

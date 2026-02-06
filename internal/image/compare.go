@@ -61,15 +61,30 @@ var hasLibreOffice = sync.OnceValue(func() bool {
 	return err == nil
 })
 
-func canCompareExt(ext string) bool {
+func canCompareExt(ext string, convertPNG bool) bool {
 	ext = strings.ToLower(ext)
 	if rasterExts[ext] {
 		return true
 	}
 	if vectorExts[ext] {
-		return hasLibreOffice()
+		return convertPNG || hasLibreOffice()
 	}
 	return false
+}
+
+// convertToPNG converts an image to PNG using ImageMagick magick convert.
+func convertToPNG(srcPath, destDir string) (string, error) {
+	base := strings.TrimSuffix(filepath.Base(srcPath), filepath.Ext(srcPath))
+	dstPath := filepath.Join(destDir, base+".png")
+
+	cmd := exec.Command("magick", "convert", srcPath, dstPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("magick convert failed for %s: %w\n%s", srcPath, err, stderr.String())
+	}
+	return dstPath, nil
 }
 
 type imageEntry struct {
@@ -160,7 +175,7 @@ func parsePSNROutput(output string) (isDifferent bool, psnr float64) {
 
 // MatchImageSets compares two image sets using content-based matching and
 // outputs diff artifacts to diffImgsDir.
-func MatchImageSets(images1, images2 map[string]string, diffImgsDir string) (*MatchResult, error) {
+func MatchImageSets(images1, images2 map[string]string, diffImgsDir string, convertPNG bool ) (*MatchResult, error) {
 	tempDir, err := os.MkdirTemp("", "ddx-match-*")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp directory: %w", err)
@@ -185,11 +200,45 @@ func MatchImageSets(images1, images2 map[string]string, diffImgsDir string) (*Ma
 
 	result := &MatchResult{}
 
+	// cmpPaths maps original image path -> converted PNG path for comparison
+	cmpPaths := make(map[string]string)
+
+	// Convert vector images to PNG if convertPNG is enabled
+	if convertPNG {
+		convertDir1 := filepath.Join(tempDir, "converted", "doc1")
+		convertDir2 := filepath.Join(tempDir, "converted", "doc2")
+		for _, d := range []string{convertDir1, convertDir2} {
+			if err := os.MkdirAll(d, 0755); err != nil {
+				return nil, fmt.Errorf("failed to create convert directory: %w", err)
+			}
+		}
+
+		for _, ext := range sortedExts {
+			if !vectorExts[ext] {
+				continue
+			}
+			for _, img := range groups1[ext] {
+				pngPath, err := convertToPNG(img.path, convertDir1)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert %s to PNG: %w", img.name, err)
+				}
+				cmpPaths[img.path] = pngPath
+			}
+			for _, img := range groups2[ext] {
+				pngPath, err := convertToPNG(img.path, convertDir2)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert %s to PNG: %w", img.name, err)
+				}
+				cmpPaths[img.path] = pngPath
+			}
+		}
+	}
+
 	for _, ext := range sortedExts {
 		list1 := groups1[ext]
 		list2 := groups2[ext]
 
-		if !canCompareExt(ext) {
+		if !canCompareExt(ext, convertPNG) {
 			for _, img := range list1 {
 				result.Skipped = append(result.Skipped, ImageInfo{img.name, img.path})
 			}
@@ -199,7 +248,7 @@ func MatchImageSets(images1, images2 map[string]string, diffImgsDir string) (*Ma
 			continue
 		}
 
-		if err := matchExtGroup(list1, list2, tempDir, diffImgsDir, result); err != nil {
+		if err := matchExtGroup(list1, list2, tempDir, diffImgsDir, result, cmpPaths); err != nil {
 			return nil, err
 		}
 	}
@@ -207,7 +256,15 @@ func MatchImageSets(images1, images2 map[string]string, diffImgsDir string) (*Ma
 	return result, nil
 }
 
-func matchExtGroup(list1, list2 []imageEntry, tempDir, diffImgsDir string, result *MatchResult) error {
+// cmpPath returns the comparison path for an image, using the converted PNG path if available.
+func cmpPath(originalPath string, cmpPaths map[string]string) string {
+	if p, ok := cmpPaths[originalPath]; ok {
+		return p
+	}
+	return originalPath
+}
+
+func matchExtGroup(list1, list2 []imageEntry, tempDir, diffImgsDir string, result *MatchResult, cmpPaths map[string]string) error {
 	matched1 := make(map[int]bool)
 	matched2 := make(map[int]bool)
 
@@ -217,7 +274,7 @@ func matchExtGroup(list1, list2 []imageEntry, tempDir, diffImgsDir string, resul
 			if matched2[j] {
 				continue
 			}
-			isDiff, _, _, err := compare(img1.path, img2.path, tempDir)
+			isDiff, _, _, err := compare(cmpPath(img1.path, cmpPaths), cmpPath(img2.path, cmpPaths), tempDir)
 			if err != nil {
 				continue
 			}
@@ -255,7 +312,7 @@ func matchExtGroup(list1, list2 []imageEntry, tempDir, diffImgsDir string, resul
 		img1 := unmatched1[i]
 		img2 := unmatched2[i]
 
-		isDiff, psnr, tmpDiffPath, err := compare(img1.path, img2.path, diffImgsDir)
+		isDiff, psnr, tmpDiffPath, err := compare(cmpPath(img1.path, cmpPaths), cmpPath(img2.path, cmpPaths), diffImgsDir)
 		if err != nil {
 			return fmt.Errorf("failed to compare %s vs %s: %w", img1.name, img2.name, err)
 		}
@@ -266,7 +323,7 @@ func matchExtGroup(list1, list2 []imageEntry, tempDir, diffImgsDir string, resul
 			ext := filepath.Ext(img1.name)
 			base1 := strings.TrimSuffix(img1.name, ext)
 			base2 := strings.TrimSuffix(img2.name, ext)
-			finalDiffPath = filepath.Join(diffImgsDir, base1+"-"+base2+ext)
+			finalDiffPath = filepath.Join(diffImgsDir, base1+"-"+base2+".png")
 			os.Rename(tmpDiffPath, finalDiffPath)
 		}
 
